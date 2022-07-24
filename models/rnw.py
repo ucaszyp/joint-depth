@@ -21,9 +21,6 @@ from .utils import *
 from SCI.model import *
 from transforms import EqualizeHist
 
-import time
-import pynvml
-
 def build_disp_net(option, check_point_path):
     # create model
     model: pytorch_lightning.LightningModule = MODELS.build(name=option.model.name, option=option)
@@ -41,16 +38,9 @@ class RNWModel(LightningModule):
     The training process
     """
     def __init__(self, opt):
-                
-        # pynvml.nvmlInit()
-        # handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        # meminfo = pynvml.nvmlDeviceGetMemoryInfo(handle)
-
-        # print("total mem: ", meminfo.total/1024**2)
-        # print("used mem: ", meminfo.used/1024**2)
-        # print("free mem: ", meminfo.free/1024**2)
 
         super(RNWModel, self).__init__()
+        self.test = opt.test
         self.opt = opt.model
         self._equ_limit = 0.004
         self._to_tensor = ToTensor()
@@ -99,7 +89,22 @@ class RNWModel(LightningModule):
         self.automatic_optimization = False
 
     def forward(self, inputs):
-        return self.G(inputs)
+        if not self.test:
+            return self.G(inputs)
+        else:
+            self.S.eval()
+            sci_gray = inputs[("color_gray", 0, 0)][0].unsqueeze(0)
+            sci_color = inputs[("color", 0, 0)][0].unsqueeze(0)                    
+            illu_list, _, _, _ = self.S(sci_gray)
+            illu = illu_list[0][0][0]
+            illu = torch.stack([illu, illu, illu])
+            illu = illu.unsqueeze(0)
+            r = sci_color / illu
+            r = torch.clamp(r, 0, 1)
+            inputs[("color_aug", 0, 0)] = r
+            return self.G(inputs)
+
+
 
     def generate_gan_outputs(self, day_inputs, outputs):
         # (n, 1, h, w)
@@ -155,13 +160,6 @@ class RNWModel(LightningModule):
         return D_loss
 
     def training_step(self, batch_data, batch_idx):
-        # print("begin training")
-        # pynvml.nvmlInit()
-        # handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        # meminfo = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        # print("total mem: ", meminfo.total/1024**2)
-        # print("used mem: ", meminfo.used/1024**2)
-        # print("free mem: ", meminfo.free/1024**2)
         # optimizers
         optim_G, optim_D = self.optimizers()
 
@@ -171,74 +169,28 @@ class RNWModel(LightningModule):
         # get input data
         day_inputs = batch_data['day']
         night_inputs = batch_data['night']
-        # aa = time.time()
         
         # TODO: get relight img
         night_inputs, sci_loss_dict = self.get_sci_relight(night_inputs)
-        # bb = time.time()
-        # pynvml.nvmlInit()
-        # handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        # meminfo = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        # print("get_sci_relight: " + "%.4f" %(bb -aa))
-        # print("total mem: ", meminfo.total/1024**2)
-        # print("used mem: ", meminfo.used/1024**2)
-        # print("free mem: ", meminfo.free/1024**2)
         
-        night_inputs = self.get_mcie_relight(night_inputs)
+        # night_inputs = self.get_mcie_relight(night_inputs)
         
-        # cc = time.time()
-        # pynvml.nvmlInit()
-        # handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        # meminfo = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        # print("get_mcie_relight: " + "%.4f" %(cc -bb))
-        # print("total mem: ", meminfo.total/1024**2)
-        # print("used mem: ", meminfo.used/1024**2)
-        # print("free mem: ", meminfo.free/1024**2)
-        
-        # outputs of G
+        # # outputs of G
+        # for key in night_inputs.keys():
+        #     night_inputs[key] = night_inputs[key].detach()
         outputs = self.G(night_inputs)
 
-        # dd = time.time()
-        # pynvml.nvmlInit()
-        # handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        # meminfo = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        # print("compute_disp: " + "%.4f" %(dd -cc))
-        # print("total mem: ", meminfo.total/1024**2)
-        # print("used mem: ", meminfo.used/1024**2)
-        # print("free mem: ", meminfo.free/1024**2)
-        
         # loss for ego-motion
         disp_loss_dict = self.compute_disp_losses(night_inputs, outputs)
-        # ee = time.time()
-        # print("compute_disp_losses: " + "%.4f" %(ee -dd))
-        # print("total mem: ", meminfo.total/1024**2)
-        # print("used mem: ", meminfo.used/1024**2)
-        # print("free mem: ", meminfo.free/1024**2)
         
         # generate outputs for gan
         day_disp, night_disp, height_map, width_map = self.generate_gan_outputs(day_inputs, outputs)
-        # ff = time.time()
-        # pynvml.nvmlInit()
-        # handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        # meminfo = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        # print("compute_disp_losses: " + "%.4f" %(ee -dd))
-        # print("total mem: ", meminfo.total/1024**2)
-        # print("used mem: ", meminfo.used/1024**2)
-        # print("free mem: ", meminfo.free/1024**2)
+        
         #
         # optimize G
         #
         # compute loss
-        G_loss = self.compute_G_loss(night_disp, height_map, width_map)
-        # gg = time.time()
-        # pynvml.nvmlInit()
-        # handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        # meminfo = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        # print("compute_G_loss: " + "%.4f" %(ee -dd))
-        # print("total mem: ", meminfo.total/1024**2)
-        # print("used mem: ", meminfo.used/1024**2)
-        # print("free mem: ", meminfo.free/1024**2)
-        
+        G_loss = self.compute_G_loss(night_disp, height_map, width_map)        
         S_loss = sum(sci_loss_dict.values())
         disp_loss = sum(disp_loss_dict.values())
 
@@ -248,14 +200,9 @@ class RNWModel(LightningModule):
         logger.add_scalar('train/S_loss', S_loss, self.global_step)
 
         # optimize G
-        G_loss = G_loss * self.opt.G_weight + disp_loss + S_loss * 0.05
+        G_loss = G_loss * self.opt.G_weight + disp_loss + S_loss * 5
+        # G_loss = S_loss * 0.05
         
-        # optimize S
-        # optim_S.zero_grad()
-        # self.manual_backward(S_loss)
-        # nn.utils.clip_grad_norm_(self.S.parameters(), 5)
-        # optim_S.step()
-
         optim_G.zero_grad()
         self.manual_backward(G_loss)
         optim_G.step()
@@ -266,7 +213,7 @@ class RNWModel(LightningModule):
         # compute loss
         D_loss = self.compute_D_loss(day_disp, night_disp, height_map, width_map)
 
-        # log
+        # # log
         logger.add_scalar('train/D_loss', D_loss, self.global_step)
 
         D_loss = D_loss * self.opt.D_weight
@@ -275,7 +222,6 @@ class RNWModel(LightningModule):
         optim_D.zero_grad()
         self.manual_backward(D_loss)
         optim_D.step()
-        # hh = time.time()
 
         # return G_loss + D_loss
 
@@ -311,60 +257,33 @@ class RNWModel(LightningModule):
         loss_dict = {}
         src_colors = inputs[('color', 0, 0)]
         b, _, h, w = src_colors.shape
-
-        # pynvml.nvmlInit()
-        # handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        # meminfo = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        # print("SCI-relight begin")
-        # print("total mem: ", meminfo.total/1024**2)
-        # print("used mem: ", meminfo.used/1024**2)
-        # print("free mem: ", meminfo.free/1024**2)
         
         # get sci_color 
         for scale in self.opt.scales:
-            rh, rw = h // (2 ** scale), w // (2 ** scale)
-            self.S.train()
-            img = inputs[("color_gray", 0, 0)]
-            loss = self.S._loss(img)
-            loss_dict[("sci_loss", 0, scale)] = loss / len(self.opt.scales)
-            
-            # pynvml.nvmlInit()
-            # handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            # meminfo = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            # print("scale_id: ", scale)
-            # print("sci-loss: ")
-            # print("total mem: ", meminfo.total/1024**2)
-            # print("used mem: ", meminfo.used/1024**2)
-            # print("free mem: ", meminfo.free/1024**2)
-            
-            for frame_id in self.opt.frame_ids:
-                # self.S.train()
-                # img = inputs[("color_gray", frame_id, 0)]
-                # loss = self.S._loss(img)
-                # loss_dict[("sci_loss", frame_id, scale)] = loss / (len(self.opt.scales) * len(self.opt.frame_ids))                
-                sci_colors = {}
-                sci_colors[frame_id] = []
-                self.S.eval()
-                with torch.no_grad():
-                    for i in range(b):
-                        sci_gray = inputs[("color_gray", frame_id, scale)][i].unsqueeze(0)
-                        sci_color = inputs[("color", frame_id, scale)][i].unsqueeze(0)                    
-                        illu_list, _, _, _ = self.S(sci_gray)
-                        illu = illu_list[0][0][0]
-                        illu = torch.stack([illu, illu, illu])
-                        illu = illu.unsqueeze(0)
-                        r = sci_color / illu
-                        r = torch.clamp(r, 0, 1)
-                        sci_colors[frame_id].append(r)
-                # pynvml.nvmlInit()
-                # handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                # meminfo = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                # print("sci-image: ")
-                # print("total mem: ", meminfo.total/1024**2)
-                # print("used mem: ", meminfo.used/1024**2)
-                # print("free mem: ", meminfo.free/1024**2)
 
-                inputs[("color_aug", frame_id, scale)] = torch.cat(sci_colors[frame_id])
+            for frame_id in self.opt.frame_ids:
+                sci_gray = inputs[("color_gray", frame_id, scale)]
+                sci_color = inputs[("color", frame_id, scale)]
+                loss, illu_list = self.S._loss(sci_gray, frame_id) #todo: index 0 loss, index 0, -1, 1 img
+                if frame_id == 0:
+                    loss_dict[("sci_loss", 0, scale)] = loss / len(self.opt.scales)
+                
+                illu = illu_list[0][0][0]
+                
+                if scale == 0 and frame_id == 0:
+                    mask_high = illu <= 0.9
+                    mask_low = illu >= 0.35
+                    light_mask = mask_low * mask_high
+                    inputs[("light_mask", frame_id, scale)] = light_mask
+
+                illu = torch.stack([illu, illu, illu])
+                illu = illu.unsqueeze(0)
+                r = sci_color / illu
+                r = torch.clamp(r, 0, 1)
+                inputs[("color_aug", frame_id, scale)] = r
+                inputs[("color_equ", frame_id, scale)] = r
+
+                
         
         return inputs, loss_dict
         
@@ -374,7 +293,7 @@ class RNWModel(LightningModule):
         
         src_colors = inputs[('color_aug', 0, 0)]
         b, _, h, w = src_colors.shape
-        src_colors = src_colors.cpu().float().numpy()
+        src_colors = src_colors.cpu().detach().float().numpy()
 
         for scale in self.opt.scales:
             rh, rw = h // (2 ** scale), w // (2 ** scale)
@@ -441,23 +360,6 @@ class RNWModel(LightningModule):
         # return
         return static_mask
     
-    def compute_sci_losses(self, inputs):
-        loss_dict = {}
-        for scale in self.opt.scales:
-            loss = 0
-            sci_loss = []
-            for frame_id in self.opt.frame_ids:
-                img = inputs[("color", frame_id, scale)]
-                loss_item = self.S._loss(img)
-                loss += loss_item
-            loss = loss / len(self.opt.frame_ids)
-
-            loss_dict[("sci_loss", scale)] = loss / len(self.opt.scales)
-            # todo: equal r loss
-            # equal_R_loss
-        return loss_dict
-
-
     def compute_disp_losses(self, inputs, outputs):
         loss_dict = {}
         for scale in self.opt.scales:
@@ -504,6 +406,7 @@ class RNWModel(LightningModule):
                 if use_static_mask:
                     static_mask = self.get_static_mask(pred, target)
                     identity_reprojection_loss *= static_mask
+                    identity_reprojection_loss *= inputs[("light_mask", 0, 0)]
 
                 reprojection_losses.append(identity_reprojection_loss)
 
@@ -512,7 +415,9 @@ class RNWModel(LightningModule):
             """
             for frame_id in self.opt.frame_ids[1:]:
                 pred = outputs[("color", frame_id, scale)]
-                reprojection_losses.append(self.compute_reprojection_loss(pred, target))
+                reproject_loss = self.compute_reprojection_loss(pred, target)
+                reproject_loss *= inputs[("light_mask", 0, 0)]
+                reprojection_losses.append(reproject_loss)
             reprojection_loss = torch.cat(reprojection_losses, 1)
 
             min_reconstruct_loss, _ = torch.min(reprojection_loss, dim=1)
