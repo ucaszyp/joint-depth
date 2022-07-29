@@ -1,4 +1,5 @@
 import os.path as osp
+import wandb
 
 import pytorch_lightning
 import torch.nn.functional as F
@@ -196,6 +197,10 @@ class RNWModel(LightningModule):
         logger.add_scalar('train/disp_loss', disp_loss, self.global_step)
         logger.add_scalar('train/G_loss', G_loss, self.global_step)
         logger.add_scalar('train/S_loss', S_loss, self.global_step)
+        wandb_data = {"disp-loss": disp_loss,
+                      "G_loss": G_loss,
+                      "S_loss": S_loss}
+        wandb.log(wandb_data)
 
         # optimize G
         G_loss = G_loss * self.opt.G_weight + disp_loss + S_loss * self.opt.S_weight

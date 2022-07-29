@@ -1,0 +1,5 @@
+[default]
+entity = ucaszyp
+project = joint-depth
+base_url = https://api.wandb.ai
+

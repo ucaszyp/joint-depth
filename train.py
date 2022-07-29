@@ -1,6 +1,7 @@
+from ast import expr_context
 import os.path as osp
 from argparse import ArgumentParser
-
+import wandb
 from mmcv import Config
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -29,10 +30,14 @@ def parse_args():
 def main():
     # parse args
     args = parse_args()
-
-    # parse cfg
     cfg = Config.fromfile(osp.join(f'configs/{args.config}.yaml'))
     cfg.test = args.test
+    cfg.seed = args.seed
+    exp_name = "joint-depth: lr:{}, s_weight:{}, adversarial:{}, illu_mask{}". \
+                format(cfg.model.G_learning_rate, cfg.model.s_weight, cfg.model.day_check_point, cfg.model.use_illu_mask)
+    wandb.init(project="joint-depth", config=cfg, name=exp_name)
+    # parse cfg
+
 
     # show information
     print(f'Now training with {args.config}...')
