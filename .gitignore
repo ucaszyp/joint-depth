@@ -1,0 +1,13 @@
+**/__pycache__
+joint-illu-13/
+joint-bs16-s-5/
+checkpoints/
+evaluation/ns_result/predictions.npy
+debug/
+
+*.pth
+*.pth.tar
+*.ckpt
+*.tar
+
+*.jpg
