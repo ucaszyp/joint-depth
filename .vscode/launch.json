@@ -13,10 +13,10 @@
             "justMyCode": true,
             "args":[
                 "--config", "rnw_ns",
-                "--gpus", "1",
+                "--gpus", "4",
                 "--work_dir", "debug"
             ],
-            "env": {"CUDA_VISIBLE_DEVICES": "0"}
+            "env": {"CUDA_VISIBLE_DEVICES": "0,1,2,3"}
         }
     ]
 }

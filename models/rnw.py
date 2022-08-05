@@ -45,6 +45,11 @@ class RNWModel(LightningModule):
         self.opt = opt.model
         self._equ_limit = 0.004
         self._to_tensor = ToTensor()
+        # self.epoch = 0
+        self.predictions = {}
+        self.gt = {}
+        self.min_depth = 1e-5
+        self.max_depth = 60.0
 
         # components
         self.gan_loss = GANLoss('lsgan')
@@ -67,6 +72,7 @@ class RNWModel(LightningModule):
         self.S.calibrate.in_conv.apply(self.S.weights_init)
         self.S.calibrate.convs.apply(self.S.weights_init)
         self.S.calibrate.out_conv.apply(self.S.weights_init)
+
 
         # register image coordinates
         if self.opt.use_position_map:
@@ -173,8 +179,8 @@ class RNWModel(LightningModule):
         
         # TODO: get relight img
         night_inputs, sci_loss_dict = self.get_sci_relight(night_inputs)
-        if self.opt.use_equ:
-            night_inputs = self.get_mcie_relight(night_inputs)
+        # if self.opt.use_equ:
+        #     night_inputs = self.get_mcie_relight(night_inputs)
         
         # # outputs of G
         outputs = self.G(night_inputs)
@@ -197,10 +203,11 @@ class RNWModel(LightningModule):
         logger.add_scalar('train/disp_loss', disp_loss, self.global_step)
         logger.add_scalar('train/G_loss', G_loss, self.global_step)
         logger.add_scalar('train/S_loss', S_loss, self.global_step)
-        wandb_data = {"disp-loss": disp_loss,
-                      "G_loss": G_loss,
-                      "S_loss": S_loss}
-        wandb.log(wandb_data)
+        # if self.local_rank == 0:
+        #     wandb_data = {"disp-loss": disp_loss,
+        #                 "G_loss": G_loss,
+        #                 "S_loss": S_loss}
+        #     wandb.log(wandb_data)
 
         # optimize G
         G_loss = G_loss * self.opt.G_weight + disp_loss + S_loss * self.opt.S_weight
@@ -225,7 +232,40 @@ class RNWModel(LightningModule):
         self.manual_backward(D_loss)
         optim_D.step()
 
-        # return G_loss + D_loss
+    def validation_step(self, batch_data, batch_idx):
+        
+        with torch.no_grad():
+            test_input = batch_data
+            self.S.eval()
+            sci_gray = test_input[("color_gray", 0, 0)]
+            sci_color = test_input[("color", 0, 0)]
+            gt = test_input[("gt", 0, 0)][0][0]                   
+            
+            illu_list, _, _, _ = self.S(sci_gray)
+            illu = illu_list[0][0][0]
+            illu = torch.stack([illu, illu, illu])
+            illu = illu.unsqueeze(0)
+            r = sci_color / illu
+            r = torch.clamp(r, 0, 1)
+            test_input[("color_aug", 0, 0)] = r
+            disp = self.G(test_input)[("disp", 0, 0)]
+            scaled_disp, depth = disp_to_depth(disp, 0.1, 100)
+            depth = depth[0, 0, :, :]
+            
+            mask = (gt > self.min_depth) & (gt < self.max_depth)
+            # get values
+
+            pred_vals, gt_vals = depth[mask], gt[mask]
+            # compute scale
+            scale = torch.median(gt_vals) / torch.median(pred_vals)
+            pred_vals *= scale
+            pred_vals = torch.clamp(pred_vals, min=self.min_depth, max=self.max_depth)
+            # compute error
+            error = self.compute_metrics(pred_vals, gt_vals)
+            error["img_index"] = test_input["file_name"]
+                
+        return error
+
 
     def training_epoch_end(self, outputs):
         """
@@ -240,13 +280,42 @@ class RNWModel(LightningModule):
 
         self.data_link.when_epoch_over()
 
+
+    def validation_epoch_end(self, val_step_outputs):
+        logger = self.logger.experiment
+        errors = {'abs_rel': [], 'sq_rel': [], 'rmse': [], 'rmse_log': [], 'a1': [], 'a2': [], 'a3': []}
+        for out in val_step_outputs:
+            for k in errors:
+                errors[k].append(out[k])
+
+        errors = {k: sum(v).item() / len(v) for k, v in errors.items()}
+        for k, v in errors.items():
+            logger.add_scalar(k, v, self.current_epoch)
+
+    def compute_metrics(self, pred, gt):
+        thresh = torch.maximum((gt / pred), (pred / gt))
+        a1 = ((thresh < 1.25).type(torch.float)).mean()
+        a2 = ((thresh < 1.25 ** 2).type(torch.float)).mean()
+        a3 = ((thresh < 1.25 ** 3).type(torch.float)).mean()
+
+        rmse = (gt - pred) ** 2
+        rmse = torch.sqrt(rmse.mean())
+        rmse_log = (torch.log(gt) - torch.log(pred)) ** 2
+        rmse_log = torch.sqrt(rmse_log.mean())
+
+        abs_rel = torch.mean(torch.abs(gt - pred) / gt)
+        sq_rel = torch.mean(((gt - pred) ** 2) / gt)
+
+        result = {'abs_rel': abs_rel, 'sq_rel': sq_rel, 'rmse': rmse, 'rmse_log': rmse_log, 'a1': a1, 'a2': a2, 'a3': a3}
+        return result
+
     def configure_optimizers(self):
         optim_params = [
             {'params': self.G.parameters(), 'lr': self.opt.G_learning_rate},
             {'params': self.S.parameters(), 'lr': self.opt.S_learning_rate, 'betas': (0.9, 0.999), 'weight_decay': 3e-4}
         ]
         optim_G = Adam(optim_params)
-        optim_D = Adam(self.D.parameters(), lr=self.opt.learning_rate)
+        optim_D = Adam(self.D.parameters(), lr=self.opt.G_learning_rate)
 
         sch_G = MultiStepLR(optim_G, milestones=[15], gamma=0.5)
         sch_D = MultiStepLR(optim_D, milestones=[15], gamma=0.5)
@@ -271,12 +340,14 @@ class RNWModel(LightningModule):
                     loss_dict[("sci_loss", 0, scale)] = loss / len(self.opt.scales)
                 
                 illu = illu_list[0]
-                illu = torch.cat((illu, illu, illu), dim=1)
-                if self.opt.use_illu_mask:
-                    illu_mask = self.get_illu_mask(illu)
-                    if scale == 0 and frame_id == 0:
+                
+                if scale == 0 and frame_id == 0:
+                    if self.opt.use_illu_mask:
+                        illu_mask = self.get_illu_mask(illu)
                         inputs[("light_mask", frame_id, scale)] = illu_mask
-
+                    inputs[("gray_aug", frame_id, scale)] = (sci_gray / illu).clamp(max=1, min=0)
+                
+                illu = torch.cat((illu, illu, illu), dim=1)
                 r = sci_color / illu
                 r = torch.clamp(r, 0, 1)
                 inputs[("color_aug", frame_id, scale)] = r
@@ -316,35 +387,40 @@ class RNWModel(LightningModule):
 
         return inputs
     
+    # def get_illu_mask(self, illu):
+    #     max_flag = 0
+    #     min_flag = 0
+    #     max_limit = 0
+    #     min_limit = 0
+    #     b, _, h, w = illu.shape
+    #     total_pixel = h * w
+    #     illu_masks = []
+    #     for batch_index in range(b):
+    #         illu_batch = illu[batch_index][0]
+    #         flat_illu = torch.flatten(illu_batch)
+    #         illu_hist = torch.histc(flat_illu, 256, 0, 1)
+    #         cdf = torch.cumsum(illu_hist, dim=0)
+    #         for i in range(256):
+    #             if (cdf[i] / total_pixel) >= 0.9 and max_flag == 0:
+    #                 max_index = i
+    #                 max_flag = 1
+    #             if (cdf[i] /total_pixel) >= 0.05 and min_flag == 0:
+    #                 min_index = i
+    #                 min_flag = 1
+    #         max_limit = max_index / 256
+    #         min_limit = min_index / 256
+    #         illu_max_mask = illu_batch <= max_limit 
+    #         illu_min_mask = illu_batch >= min_limit
+    #         illu_mask = illu_max_mask * illu_min_mask
+    #         illu_mask = illu_mask.unsqueeze(0)
+    #         illu_mask = illu_mask.unsqueeze(0)
+    #         illu_masks.append(illu_mask)
+    #     return torch.cat(illu_masks)
     def get_illu_mask(self, illu):
-        max_flag = 0
-        min_flag = 0
-        max_limit = 0
-        min_limit = 0
-        b, _, h, w = illu.shape
-        total_pixel = h * w
-        illu_masks = []
-        for batch_index in range(b):
-            illu_batch = illu[batch_index][0]
-            flat_illu = torch.flatten(illu_batch)
-            illu_hist = torch.histc(flat_illu, 256, 0, 1)
-            cdf = torch.cumsum(illu_hist, dim=0)
-            for i in range(256):
-                if (cdf[i] / total_pixel) >= 0.9 and max_flag == 0:
-                    max_index = i
-                    max_flag = 1
-                if (cdf[i] /total_pixel) >= 0.05 and min_flag == 0:
-                    min_index = i
-                    min_flag = 1
-            max_limit = max_index / 256
-            min_limit = min_index / 256
-            illu_max_mask = illu_batch <= max_limit 
-            illu_min_mask = illu_batch >= min_limit
-            illu_mask = illu_max_mask * illu_min_mask
-            illu_mask = illu_mask.unsqueeze(0)
-            illu_mask = illu_mask.unsqueeze(0)
-            illu_masks.append(illu_mask)
-        return torch.cat(illu_masks)
+        illu_mask_high = illu <= 0.95
+        illu_mask_low = illu >= 0.35
+        illu_mask = illu_mask_high * illu_mask_low
+        return illu_mask
 
     
     def get_color_input(self, inputs, frame_id, scale):
@@ -381,6 +457,10 @@ class RNWModel(LightningModule):
     
     def compute_disp_losses(self, inputs, outputs):
         loss_dict = {}
+        light_color = (inputs[("gray_aug", 0, 0)] * 255).type(torch.uint8)
+        light_mask_high = (light_color <= 200)
+        light_mask_low = (light_color >= 20)
+        light_mask = light_mask_high * light_mask_low
         for scale in self.opt.scales:
             """
             initialization
@@ -427,6 +507,7 @@ class RNWModel(LightningModule):
                 if use_static_mask:
                     static_mask = self.get_static_mask(pred, target)
                     identity_reprojection_loss *= static_mask
+                    # identity_reprojection_loss *= light_mask
                     if use_illu_mask:
                         identity_reprojection_loss *= inputs[("light_mask", 0, 0)]
 
@@ -438,16 +519,26 @@ class RNWModel(LightningModule):
             for frame_id in self.opt.frame_ids[1:]:
                 pred = outputs[("color", frame_id, scale)]
                 reproject_loss = self.compute_reprojection_loss(pred, target)
+                reproject_loss *= light_mask
                 if use_illu_mask:
                     reproject_loss *= inputs[("light_mask", 0, 0)]
                 reprojection_losses.append(reproject_loss)
             reprojection_loss = torch.cat(reprojection_losses, 1)
 
             min_reconstruct_loss, _ = torch.min(reprojection_loss, dim=1)
+            b, _, _ = min_reconstruct_loss.shape
+            # max_queue = []
+            # for i in range(b):
+            #     max_scale = min_reconstruct_loss[i].max()
+            #     max_queue.append(max_scale)
+            # max_tensor = torch.stack(max_queue)
+            # max_tensor = max_tensor.unsqueeze(-1)
+            # max_tensor = max_tensor.unsqueeze(-1)
+            # min_reconstruct_loss = min_reconstruct_loss / (max_tensor + 1e-4)  
             loss_dict[('min_reconstruct_loss', scale)] = min_reconstruct_loss.mean() / len(self.opt.scales)
 
             """
-            disp mean normalization
+            disp mean normalizationmin_reconstruct_loss
             """
             if self.opt.disp_norm:
                 mean_disp = disp.mean(2, True).mean(3, True)

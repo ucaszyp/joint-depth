@@ -53,11 +53,11 @@ model:
   disparity_smoothness: 1.0e-3
 
   use_static_mask: True
-  use_illu_mask: False
+  use_illu_mask: True
 
   static_mask_quantile: 0.2
 
   use_position_map: True
-  S_weight: 5
+  S_weight: 0.2
   G_weight: 4.0e-4
   D_weight: 4.0e-4
