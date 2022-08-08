@@ -53,7 +53,8 @@ model:
   disparity_smoothness: 1.0e-3
 
   use_static_mask: True
-  use_illu_mask: True
+  use_illu_mask: False
+  use_hist_mask: True
 
   static_mask_quantile: 0.2
 

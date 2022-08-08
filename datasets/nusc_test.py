@@ -13,7 +13,7 @@ class Testloader(torch.utils.data.Dataset):
         self.gt_files = []
 
         test_files = sorted(os.listdir(self.test_dir))
-        self.test_files += (test_files + test_files + test_files + test_files)
+        self.test_files += (test_files + test_files + test_files + test_files + test_files + test_files + test_files + test_files)
         
         # tmp = test_files[-1]
         # test_files.pop(-1)

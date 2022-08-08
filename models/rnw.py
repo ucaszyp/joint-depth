@@ -479,6 +479,7 @@ class RNWModel(LightningModule):
             """
             use_static_mask = self.opt.use_static_mask
             use_illu_mask = self.opt.use_illu_mask
+            use_hist_mask = self.opt.use_hist_mask
 
             # update ego diff
             if use_static_mask:
@@ -507,7 +508,8 @@ class RNWModel(LightningModule):
                 if use_static_mask:
                     static_mask = self.get_static_mask(pred, target)
                     identity_reprojection_loss *= static_mask
-                    # identity_reprojection_loss *= light_mask
+                    if use_hist_mask:
+                        identity_reprojection_loss *= light_mask
                     if use_illu_mask:
                         identity_reprojection_loss *= inputs[("light_mask", 0, 0)]
 
@@ -519,7 +521,8 @@ class RNWModel(LightningModule):
             for frame_id in self.opt.frame_ids[1:]:
                 pred = outputs[("color", frame_id, scale)]
                 reproject_loss = self.compute_reprojection_loss(pred, target)
-                reproject_loss *= light_mask
+                if use_hist_mask:
+                    reproject_loss *= light_mask
                 if use_illu_mask:
                     reproject_loss *= inputs[("light_mask", 0, 0)]
                 reprojection_losses.append(reproject_loss)

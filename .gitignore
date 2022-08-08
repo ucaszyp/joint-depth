@@ -7,6 +7,8 @@ debug/
 mask*/
 nothing*/
 tp*/
+h_mask*/
+i_mask*/
 
 *.pth
 *.pth.tar

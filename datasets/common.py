@@ -7,8 +7,8 @@ ROBOTCAR_ROOT = {
     'night': '/opt/data/private/Oxford_RobotCar_Processed/2014-12-16-18-44-24/'
 }
 NUSCENES_ROOT = {
-    'sequence': '/data3/zyp/RNW_data/sequences/',
-    'test_color': '/data3/zyp/RNW_data/test_night/color/',
-    'test_gt': '/data3/zyp/RNW_data/test_night/gt/',
-    'split': '/data3/zyp/RNW_data/splits/'
+    'sequence': '/data/hdd01/yupeng/RNW_data/sequences/',
+    'test_color': '/data/hdd01/yupeng/RNW_data/test_night/color/',
+    'test_gt': '/data/hdd01/yupeng/RNW_data/test_night/gt/',
+    'split': '/data/hdd01/yupeng/RNW_data/splits/'
 }
